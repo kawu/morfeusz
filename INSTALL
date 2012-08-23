@@ -1,0 +1,5 @@
+To install Morfeusz Haskell bindings, use the following command:
+
+$ cabal install --extra-include-dirs=$MPATH --extra-lib-dirs=$MPATH
+
+where $MPATH is a path to Morfeusz library.

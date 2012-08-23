@@ -1,0 +1,16 @@
+name:               morfeusz
+version:            0.2.0
+cabal-version:      >= 1.2
+synopsis:           Morfeusz API
+license:            BSD3
+license-file:       LICENSE
+author:             Jakub Waszczuk
+maintainer:         waszczuk.kuba@gmail.com
+build-type:         Simple
+
+library
+  exposed-modules:  NLP.Morfeusz
+  build-depends:    base
+  includes:         morfeusz.h
+  extra-libraries:  morfeusz
+  extensions:       ForeignFunctionInterface
