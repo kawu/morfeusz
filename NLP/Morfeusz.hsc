@@ -1,17 +1,24 @@
 {-# LANGUAGE ForeignFunctionInterface #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE DeriveFunctor #-}
 
 module NLP.Morfeusz
-( Interp (..)
-, analyse
+( asDag
+, rmSpaces
+, module Data.Either
 ) where
 
 import System.IO.Unsafe (unsafePerformIO)
 import Control.Applicative ((<$>), (<*>))
 import Control.Monad (when)
+import Control.Monad.State (evalState, put, get)
 import Data.Function (on)
 import Data.List (groupBy)
+import Data.Char (isSpace)
+import Data.Either
+import qualified Data.Map as M
 import qualified Data.ByteString as B
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
@@ -56,30 +63,30 @@ setSpace :: WhiteSpace -> IO Bool
 setSpace spc = (1 ==) <$>
     c_morfeusz_set_option (unMorfOption whitespace) (unWhiteSpace spc)
 
--- + Funkcja analyse nie powinna być uruchamiana z dwóch wątków na raz
--- + Funckja 'analyse' powinna zwracać listę (Either Token Space)
--- - Zamienić typy ze "String" na "Text"
--- - Wynik analizy jako DAG
+-- * Podział na słowa na poziomie Haskella.
+-- * Morfeusza uruchamiamy na spójnym fragmencie tekstu bez spacji. 
+-- * Na takim też fragmencie otrzymujemy DAG.
 
--- | Haskell structure for internal representation of Morfeusz interpretation.
-data MorfInterp = MorfInterp
-    { _beg :: Int
-    , _end :: Int
-    , _orth :: T.Text
+-- | A directed edge with label of type @a@ between nodes of type 'Int'.
+-- TODO: Change beg -> from, end -> to.
+data Edge a = Edge
+    { beg :: Int
+    , end :: Int
+    , label :: a }
+    deriving (Eq, Ord, Show, Functor)
+
+-- | Raw morphosyntactic interpretation as presented by the Morfeusz.
+data RawInterp = RawInterp
+    { _orth :: T.Text
     , _base :: Maybe T.Text
-    , _msd :: Maybe T.Text }
-    deriving (Eq, Show)
+    , _msd  :: Maybe T.Text }
+    deriving (Eq, Ord, Show)
 
--- | A space. 
-type Space = T.Text
-
--- | A token.
-data Token
-    = Tok
-        { orth      :: T.Text
-        , interps   :: [Interp] }
-    | Unk
-        { orth      :: T.Text }
+-- | A token with a list of recognized interpretations.  If the list of
+-- interpretations is empty, the token is unknown to the Morfeusz.
+data Token = Token
+    { orth      :: T.Text
+    , interps   :: [Interp] }
     deriving (Show)
 
 -- | An interpretation of the word.
@@ -88,8 +95,13 @@ data Interp = Interp
     , msd  :: T.Text }
     deriving (Show)
 
+-- | A space. 
+type Space = T.Text
+
+-- expand :: Interp -> [Interp]
+
 -- | We don't provide the poke functionality, we don't need it.
-instance Storable MorfInterp where
+instance Storable (Edge RawInterp) where
     sizeOf    _ = (#size InterpMorf)
     alignment _ = alignment (undefined :: CString)  -- or CInt ?
     peek ptr = do
@@ -101,7 +113,7 @@ instance Storable MorfInterp where
                 <$> getText ((#peek InterpMorf, forma) ptr)
                 <*> getTextMaybe ((#peek InterpMorf, haslo) ptr)
                 <*> getTextMaybe ((#peek InterpMorf, interp) ptr)
-        return $ MorfInterp beg end orth base msd
+        return $ Edge beg end (RawInterp orth base msd)
       where
         getInt = fmap fromIntegral :: IO CInt -> IO Int
         getText cStrIO = peekText =<< cStrIO
@@ -113,34 +125,83 @@ instance Storable MorfInterp where
 
 foreign import ccall unsafe "morfeusz_analyse"
     -- InterpMorf *morfeusz_analyse(char *tekst)
-    c_morfeusz_analyse :: CString -> IO (Ptr MorfInterp)
+    c_morfeusz_analyse :: CString -> IO (Ptr (Edge RawInterp))
 
 foreign import ccall unsafe "morfeusz_set_option"
     -- int morfeusz_set_option(int option, int value)
     c_morfeusz_set_option :: CInt -> CInt -> IO CInt
 
--- | Get Morfeusz analysis as a list of possible interpretation sets
--- for each segment in the input word.
--- TODO: Add some info about the global lock to docs.
-analyse :: T.Text -> [Either Token Space]
+-- | A DAG with annotated edges. 
+type DAG a = [Edge a]
+
+-- | Analyse the word and output raw Morfeusz results.
+analyse :: T.Text -> DAG RawInterp
 analyse word = run $ \cword -> lock $ do
     _ <- setEncoding utf8
     _ <- setSpace keep_whitespace
     interp_ptr <- c_morfeusz_analyse cword
-    when (interp_ptr == nullPtr) (fail $ "null pointer")
-    map mkTok . groupBy ((==) `on` _beg) <$> retrieve 0 interp_ptr
+    when (interp_ptr == nullPtr) (fail $ "analyse: null pointer")
+    retrieve 0 interp_ptr
   where
     run = unsafePerformIO . B.useAsCString (T.encodeUtf8 word)
     retrieve k ptr = do
         x <- peekElemOff ptr k
-        if _beg x == -1
+        if beg x == -1
             then return []
             else (:) <$> return x <*> retrieve (k + 1) ptr
-    mkTok [m@(MorfInterp {_msd = Just "sp"})] = Right       $ _orth m
-    mkTok [m@(MorfInterp {_msd = Nothing})]   = Left . Unk  $ _orth m
-    mkTok (m : ms) = Left . Tok (_orth m) . map fromMorf $ (m : ms)
-    fromMorf MorfInterp{..} = Interp
-        { base = fromJust _base
-        , msd  = fromJust _msd }
-    fromJust (Just x) = x
-    fromJust Nothing  = error "fromJust: Nothing"
+
+properDAG :: DAG RawInterp -> DAG Token
+properDAG dag =
+    [Edge p q t | ((p, q), t) <- M.toAscList m]
+  where
+    m = M.fromListWith (<>) [((p, q), fromRaw r) | Edge p q r <- dag]
+    fromRaw (RawInterp o (Just b) (Just m)) = Token o [Interp b m] 
+    fromRaw (RawInterp o _ _)               = Token o [] 
+    Token orth xs <> Token _ ys = Token orth (xs ++ ys)
+
+asDag :: T.Text -> [Either (DAG Token) Space]
+asDag =
+    flip evalState 0 . mapM updateIxs . map mkElem . T.groupBy cmp
+  where
+    cmp x y = isSpace x == isSpace y
+    mkElem x
+        | T.any isSpace x   = Right x
+        | otherwise         = Left . properDAG . analyse $ x
+    updateIxs (Right x) = return (Right x)
+    updateIxs (Left xs) = Left <$> updateDAG xs
+    updateDAG xs        = do
+        n <- get
+        let m  = maximum . map end $ xs
+            ys = map (shift n) xs
+        put (n + m)
+        return ys
+    shift k Edge{..} = Edge (beg + k) (end + k) label
+
+rmSpaces :: [Either [a] b] -> [a]
+rmSpaces = concat . lefts
+
+-- -- | Get Morfeusz analysis as a list of possible interpretation sets
+-- -- for each segment in the input word.
+-- -- TODO: Add some info about the global lock to docs.
+-- analyse :: T.Text -> [Either Token Space]
+-- analyse word = run $ \cword -> lock $ do
+--     _ <- setEncoding utf8
+--     _ <- setSpace keep_whitespace
+--     interp_ptr <- c_morfeusz_analyse cword
+--     when (interp_ptr == nullPtr) (fail $ "null pointer")
+--     map mkTok . groupBy ((==) `on` _beg) <$> retrieve 0 interp_ptr
+--   where
+--     run = unsafePerformIO . B.useAsCString (T.encodeUtf8 word)
+--     retrieve k ptr = do
+--         x <- peekElemOff ptr k
+--         if _beg x == -1
+--             then return []
+--             else (:) <$> return x <*> retrieve (k + 1) ptr
+--     mkTok [m@(MorfInterp {_msd = Just "sp"})] = Right       $ _orth m
+--     mkTok [m@(MorfInterp {_msd = Nothing})]   = Left . Unk  $ _orth m
+--     mkTok (m : ms) = Left . Tok (_orth m) . map fromMorf $ (m : ms)
+--     fromMorf MorfInterp{..} = Interp
+--         { base = fromJust _base
+--         , msd  = fromJust _msd }
+--     fromJust (Just x) = x
+--     fromJust Nothing  = error "fromJust: Nothing"

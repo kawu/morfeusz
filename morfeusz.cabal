@@ -17,7 +17,7 @@ build-type:         Simple
 library
   exposed-modules:  NLP.Morfeusz
   other-modules:    NLP.Morfeusz.Lock, NLP.Morfeusz.Lock.Internal
-  build-depends:    base, text, bytestring
+  build-depends:    base, containers, text, bytestring, mtl
   includes:         morfeusz.h
   extra-libraries:  morfeusz
   extensions:       ForeignFunctionInterface
