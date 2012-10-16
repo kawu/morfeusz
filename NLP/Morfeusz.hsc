@@ -1,26 +1,26 @@
 {-# LANGUAGE ForeignFunctionInterface #-}
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RecordWildCards #-}
 
 module NLP.Morfeusz
-( analyse
-, Interp (..) 
-, setEncoding
-, utf8
-, iso8859_2
-, cp1250
-, cp852
-, skip_whitespace
-, keep_whitespace
+( Interp (..)
+, analyse
 ) where
 
+import System.IO.Unsafe (unsafePerformIO)
 import Control.Applicative ((<$>), (<*>))
 import Control.Monad (when)
 import Data.Function (on)
 import Data.List (groupBy)
+import qualified Data.ByteString as B
+import qualified Data.Text as T
+import qualified Data.Text.Encoding as T
 
-import Foreign
-import Foreign.Ptr
+import Foreign hiding (unsafePerformIO)
 import Foreign.C.Types
-import Foreign.C.String
+import Foreign.C.String (CString)
+
+import NLP.Morfeusz.Lock (lock)
 
 #include "morfeusz.h"
 
@@ -48,44 +48,68 @@ newtype WhiteSpace = WhiteSpace { unWhiteSpace :: CInt }
  , skip_whitespace = MORFEUSZ_SKIP_WHITESPACE
  , keep_whitespace = MORFEUSZ_KEEP_WHITESPACE }
 
+setEncoding :: Encoding -> IO Bool
+setEncoding enc = (1 ==) <$>
+    c_morfeusz_set_option (unMorfOption encoding) (unEncoding enc)
+
+setSpace :: WhiteSpace -> IO Bool
+setSpace spc = (1 ==) <$>
+    c_morfeusz_set_option (unMorfOption whitespace) (unWhiteSpace spc)
+
+-- + Funkcja analyse nie powinna być uruchamiana z dwóch wątków na raz
+-- + Funckja 'analyse' powinna zwracać listę (Either Token Space)
+-- - Zamienić typy ze "String" na "Text"
+-- - Wynik analizy jako DAG
+
 -- | Haskell structure for internal representation of Morfeusz interpretation.
 data MorfInterp = MorfInterp
-    { _start :: Int
+    { _beg :: Int
     , _end :: Int
-    , _token :: String
-    , _lemma :: Maybe String
-    , _msd :: Maybe String }
+    , _orth :: T.Text
+    , _base :: Maybe T.Text
+    , _msd :: Maybe T.Text }
     deriving (Eq, Show)
 
+-- | A space. 
+type Space = T.Text
+
+-- | A token.
+data Token
+    = Tok
+        { orth      :: T.Text
+        , interps   :: [Interp] }
+    | Unk
+        { orth      :: T.Text }
+    deriving (Show)
+
+-- | An interpretation of the word.
 data Interp = Interp
-    { token :: String
-    , lemma :: Maybe String
-    , msd   :: Maybe String }
+    { base :: T.Text
+    , msd  :: T.Text }
+    deriving (Show)
 
-morf2interp (MorfInterp _ _ token lemma msd) = Interp token lemma msd
-
+-- | We don't provide the poke functionality, we don't need it.
 instance Storable MorfInterp where
     sizeOf    _ = (#size InterpMorf)
     alignment _ = alignment (undefined :: CString)  -- or CInt ?
     peek ptr = do
-        start <- getInt ((#peek InterpMorf, p) ptr)
+        beg <- getInt ((#peek InterpMorf, p) ptr)
         end <- getInt ((#peek InterpMorf, k) ptr)
-        (token, lemma, msd) <- if start == -1
+        (orth, base, msd) <- if beg == -1
             then return ("", Nothing, Nothing)
             else (,,)
-                <$> getString ((#peek InterpMorf, forma) ptr)
-                <*> getStringMaybe ((#peek InterpMorf, haslo) ptr)
-                <*> getStringMaybe ((#peek InterpMorf, interp) ptr)
-        return $ MorfInterp start end token lemma msd
+                <$> getText ((#peek InterpMorf, forma) ptr)
+                <*> getTextMaybe ((#peek InterpMorf, haslo) ptr)
+                <*> getTextMaybe ((#peek InterpMorf, interp) ptr)
+        return $ MorfInterp beg end orth base msd
       where
         getInt = fmap fromIntegral :: IO CInt -> IO Int
-        getString cStrIO = peekCString =<< cStrIO
-        getStringMaybe cStrIO = cStrIO >>= \cStr -> do
+        getText cStrIO = peekText =<< cStrIO
+        getTextMaybe cStrIO = cStrIO >>= \cStr -> do
             if cStr == nullPtr
                 then return Nothing
-                else Just <$> peekCString cStr
-
--- | Warning: is the C function reentrant ?  If not, API need to be changed ?
+                else Just <$> peekText cStr
+        peekText xs = T.decodeUtf8 <$> B.packCString xs
 
 foreign import ccall unsafe "morfeusz_analyse"
     -- InterpMorf *morfeusz_analyse(char *tekst)
@@ -97,19 +121,26 @@ foreign import ccall unsafe "morfeusz_set_option"
 
 -- | Get Morfeusz analysis as a list of possible interpretation sets
 -- for each segment in the input word.
-analyse :: String -> IO [[Interp]]
-analyse word = withCString word $ \cword -> do
+-- TODO: Add some info about the global lock to docs.
+analyse :: T.Text -> [Either Token Space]
+analyse word = run $ \cword -> lock $ do
+    _ <- setEncoding utf8
+    _ <- setSpace keep_whitespace
     interp_ptr <- c_morfeusz_analyse cword
     when (interp_ptr == nullPtr) (fail $ "null pointer")
-    mkInterps <$> retrieve 0 interp_ptr
+    map mkTok . groupBy ((==) `on` _beg) <$> retrieve 0 interp_ptr
   where
-    mkInterps = map (map morf2interp) . groupBy ((==) `on` _start)
+    run = unsafePerformIO . B.useAsCString (T.encodeUtf8 word)
     retrieve k ptr = do
         x <- peekElemOff ptr k
-        if _start x == -1
+        if _beg x == -1
             then return []
             else (:) <$> return x <*> retrieve (k + 1) ptr
-
-setEncoding :: Encoding -> IO Bool
-setEncoding choice = (1 ==) <$>
-    c_morfeusz_set_option (unMorfOption encoding) (unEncoding choice)
+    mkTok [m@(MorfInterp {_msd = Just "sp"})] = Right       $ _orth m
+    mkTok [m@(MorfInterp {_msd = Nothing})]   = Left . Unk  $ _orth m
+    mkTok (m : ms) = Left . Tok (_orth m) . map fromMorf $ (m : ms)
+    fromMorf MorfInterp{..} = Interp
+        { base = fromJust _base
+        , msd  = fromJust _msd }
+    fromJust (Just x) = x
+    fromJust Nothing  = error "fromJust: Nothing"
