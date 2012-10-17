@@ -4,9 +4,28 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE DeriveFunctor #-}
 
+-- | The module provides 'asDag', 'asPaths' and 'asPath' wrapper functions
+-- which use Morfeusz bindings to analyse input sentences.
+
 module NLP.Morfeusz
-( asDag
-, rmSpaces
+(
+-- * Types
+  DAG
+, Edge (..)
+, Token (..)
+, Interp (..)
+, Space
+
+-- * Sentence analysis
+, asDag
+, asPaths
+, asPath
+
+-- * Utilities
+, toPaths
+, mapL
+, concatL
+, concatMapL
 , module Data.Either
 ) where
 
@@ -55,23 +74,20 @@ newtype WhiteSpace = WhiteSpace { unWhiteSpace :: CInt }
  , skip_whitespace = MORFEUSZ_SKIP_WHITESPACE
  , keep_whitespace = MORFEUSZ_KEEP_WHITESPACE }
 
+-- | Set the encoding.
 setEncoding :: Encoding -> IO Bool
 setEncoding enc = (1 ==) <$>
     c_morfeusz_set_option (unMorfOption encoding) (unEncoding enc)
 
+-- | Set the Morfeusz whitespace option.
 setSpace :: WhiteSpace -> IO Bool
 setSpace spc = (1 ==) <$>
     c_morfeusz_set_option (unMorfOption whitespace) (unWhiteSpace spc)
 
--- * Podział na słowa na poziomie Haskella.
--- * Morfeusza uruchamiamy na spójnym fragmencie tekstu bez spacji. 
--- * Na takim też fragmencie otrzymujemy DAG.
-
 -- | A directed edge with label of type @a@ between nodes of type 'Int'.
--- TODO: Change beg -> from, end -> to.
 data Edge a = Edge
-    { beg :: Int
-    , end :: Int
+    { from  :: Int
+    , to    :: Int
     , label :: a }
     deriving (Eq, Ord, Show, Functor)
 
@@ -98,22 +114,20 @@ data Interp = Interp
 -- | A space. 
 type Space = T.Text
 
--- expand :: Interp -> [Interp]
-
--- | We don't provide the poke functionality, we don't need it.
+-- | We only provide the peek functionality.
 instance Storable (Edge RawInterp) where
     sizeOf    _ = (#size InterpMorf)
     alignment _ = alignment (undefined :: CString)  -- or CInt ?
     peek ptr = do
-        beg <- getInt ((#peek InterpMorf, p) ptr)
-        end <- getInt ((#peek InterpMorf, k) ptr)
-        (orth, base, msd) <- if beg == -1
+        from <- getInt ((#peek InterpMorf, p) ptr)
+        to <- getInt ((#peek InterpMorf, k) ptr)
+        (orth, base, msd) <- if from == -1
             then return ("", Nothing, Nothing)
             else (,,)
                 <$> getText ((#peek InterpMorf, forma) ptr)
                 <*> getTextMaybe ((#peek InterpMorf, haslo) ptr)
                 <*> getTextMaybe ((#peek InterpMorf, interp) ptr)
-        return $ Edge beg end (RawInterp orth base msd)
+        return $ Edge from to (RawInterp orth base msd)
       where
         getInt = fmap fromIntegral :: IO CInt -> IO Int
         getText cStrIO = peekText =<< cStrIO
@@ -138,7 +152,7 @@ type DAG a = [Edge a]
 analyse :: T.Text -> DAG RawInterp
 analyse word = run $ \cword -> lock $ do
     _ <- setEncoding utf8
-    _ <- setSpace keep_whitespace
+    _ <- setSpace skip_whitespace
     interp_ptr <- c_morfeusz_analyse cword
     when (interp_ptr == nullPtr) (fail $ "analyse: null pointer")
     retrieve 0 interp_ptr
@@ -146,10 +160,12 @@ analyse word = run $ \cword -> lock $ do
     run = unsafePerformIO . B.useAsCString (T.encodeUtf8 word)
     retrieve k ptr = do
         x <- peekElemOff ptr k
-        if beg x == -1
+        if from x == -1
             then return []
             else (:) <$> return x <*> retrieve (k + 1) ptr
 
+-- | Translate the DAG of raw Morfeusz interpretations to
+-- DAG labeled with tokens.
 properDAG :: DAG RawInterp -> DAG Token
 properDAG dag =
     [Edge p q t | ((p, q), t) <- M.toAscList m]
@@ -159,6 +175,9 @@ properDAG dag =
     fromRaw (RawInterp o _ _)               = Token o [] 
     Token orth xs <> Token _ ys = Token orth (xs ++ ys)
 
+-- | Analyse the input sentence as a DAG of tokens interspersed by spaces.
+-- The sentence is divided on spaces first and only individual words are
+-- delivererd to Morfeusz library for morphosyntactic analysis.
 asDag :: T.Text -> [Either (DAG Token) Space]
 asDag =
     flip evalState 0 . mapM updateIxs . map mkElem . T.groupBy cmp
@@ -171,37 +190,50 @@ asDag =
     updateIxs (Left xs) = Left <$> updateDAG xs
     updateDAG xs        = do
         n <- get
-        let m  = maximum . map end $ xs
+        let m  = maximum . map to $ xs
             ys = map (shift n) xs
         put (n + m)
         return ys
-    shift k Edge{..} = Edge (beg + k) (end + k) label
+    shift k Edge{..} = Edge (from + k) (to + k) label
 
-rmSpaces :: [Either [a] b] -> [a]
-rmSpaces = concat . lefts
+-- | Retrieve all paths from the root to leaves.
+toPaths :: DAG a -> [[a]]
+toPaths dag =
+    doIt .fst . M.findMin $ m
+  where
+    m = M.fromListWith (++) [(from e, [e]) | e <- dag]
+    doIt p = case M.lookup p m of
+        Just es -> [(label e : path) | e <- es, path <- doIt (to e)]
+        Nothing -> [[]]
 
--- -- | Get Morfeusz analysis as a list of possible interpretation sets
--- -- for each segment in the input word.
--- -- TODO: Add some info about the global lock to docs.
--- analyse :: T.Text -> [Either Token Space]
--- analyse word = run $ \cword -> lock $ do
---     _ <- setEncoding utf8
---     _ <- setSpace keep_whitespace
---     interp_ptr <- c_morfeusz_analyse cword
---     when (interp_ptr == nullPtr) (fail $ "null pointer")
---     map mkTok . groupBy ((==) `on` _beg) <$> retrieve 0 interp_ptr
---   where
---     run = unsafePerformIO . B.useAsCString (T.encodeUtf8 word)
---     retrieve k ptr = do
---         x <- peekElemOff ptr k
---         if _beg x == -1
---             then return []
---             else (:) <$> return x <*> retrieve (k + 1) ptr
---     mkTok [m@(MorfInterp {_msd = Just "sp"})] = Right       $ _orth m
---     mkTok [m@(MorfInterp {_msd = Nothing})]   = Left . Unk  $ _orth m
---     mkTok (m : ms) = Left . Tok (_orth m) . map fromMorf $ (m : ms)
---     fromMorf MorfInterp{..} = Interp
---         { base = fromJust _base
---         , msd  = fromJust _msd }
---     fromJust (Just x) = x
---     fromJust Nothing  = error "fromJust: Nothing"
+-- | Similar to the 'asDag' function but instead of a token DAG it returns
+-- all DAG paths (using the 'toPaths' function) for each word in the
+-- input sentence.
+asPaths :: T.Text -> [Either [[Token]] Space]
+asPaths = mapL toPaths . asDag
+
+-- | Analyse the input sentence and arbitrarily choose one path
+-- from the output DAG.
+asPath :: T.Text -> [Either Token Space]
+asPath = 
+    let hd []     = error "asPath.head: empty list"
+        hd (x:xs) = x
+    in  concatMapL hd . asPaths
+
+-- | Map the function over left elements.
+mapL :: (a -> a') -> [Either a b] -> [Either a' b]
+mapL f =
+    let g (Left x)  = Left (f x)
+        g (Right y) = Right y
+    in  map g
+
+-- | Concatenate left elements.
+concatL :: [Either [a] b] -> [Either a b]
+concatL =
+    let liftL (Left xs) = [Left x | x <- xs]
+        liftL (Right y) = [Right y]
+    in  concat . map liftL
+
+-- | Map the function over left elements and concatenate results.
+concatMapL :: (a -> [b]) -> [Either a c] -> [Either b c]
+concatMapL f = concatL . mapL f
