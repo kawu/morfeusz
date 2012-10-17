@@ -4,8 +4,39 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE DeriveFunctor #-}
 
--- | The module provides 'asDag', 'asPaths' and 'asPath' wrapper functions
--- which use Morfeusz bindings to analyse input sentences.
+-- | The module provides 'asDAG', 'asPaths' and 'asPath' wrapper functions
+-- which use Morfeusz bindings to analyse input sentences. 
+-- The first one represents analysis results as a directed acylic graph
+-- (DAG) with edges labeled with 'Token's.  The DAG representation is needed
+-- when the input word has multiple correct segmentations.
+--
+-- >>> :m NLP.Morfeusz
+-- >>> :set -XOverloadedStrings
+-- >>> let wordAsDAG = head . lefts . asDAG
+-- >>> mapM_ print . wordAsDAG $ "miałem"
+-- Edge {from = 0, to = 1, label = Token {orth = "mia\322", interps = [Interp {base = "mie\263", msd = "praet:sg:m1.m2.m3:imperf"}]}}
+-- Edge {from = 0, to = 2, label = Token {orth = "mia\322em", interps = [Interp {base = "mia\322", msd = "subst:sg:inst:m3"}]}}
+-- Edge {from = 1, to = 2, label = Token {orth = "em", interps = [Interp {base = "by\263", msd = "aglt:sg:pri:imperf:wok"}]}}
+--
+-- Alternatively you can use the 'asPaths' function to see all paths instead of a DAG.
+--
+-- >>> let wordAsPaths = head . lefts . asPaths
+-- >>> mapM_ print . wordAsPaths $ "miałem"
+-- [Token {orth = "mia\322em", interps = [Interp {base = "mia\322", msd = "subst:sg:inst:m3"}]}]
+-- [Token {orth = "mia\322", interps = [Interp {base = "mie\263", msd = "praet:sg:m1.m2.m3:imperf"}]},Token {orth = "em", interps = [Interp {base = "by\263", msd = "aglt:sg:pri:imperf:wok"}]}]
+--
+-- The last analysis function, 'asPath', takes paths extracted using the 'asPaths' function
+-- and arbitrarily chooses one of them.  While it returns only part of the analysis result,
+-- it has also the most user-friendly interface.
+-- 
+-- >>> mapM_ print . asPath $ "zdanie ze spacjami"
+-- Left (Token {orth = "zdanie", interps = [Interp {base = "zda\263", msd = "ger:sg:nom.acc:n2:perf:aff"},Interp {base = "zdanie", msd = "subst:sg:nom.acc.voc:n2"}]})
+-- Right " "
+-- Left (Token {orth = "ze", interps = [Interp {base = "z", msd = "prep:inst:wok"},Interp {base = "z", msd = "prep:gen.acc:wok"}]})
+-- Right " "
+-- Left (Token {orth = "spacjami", interps = [Interp {base = "spacja", msd = "subst:pl:inst:f"}]})
+--
+-- Use the 'lefts' function when you want to remove spaces from the result. 
 
 module NLP.Morfeusz
 (
@@ -17,7 +48,7 @@ module NLP.Morfeusz
 , Space
 
 -- * Sentence analysis
-, asDag
+, asDAG
 , asPaths
 , asPath
 
@@ -26,6 +57,7 @@ module NLP.Morfeusz
 , mapL
 , concatL
 , concatMapL
+
 , module Data.Either
 ) where
 
@@ -178,8 +210,8 @@ properDAG dag =
 -- | Analyse the input sentence as a DAG of tokens interspersed by spaces.
 -- The sentence is divided on spaces first and only individual words are
 -- delivererd to Morfeusz library for morphosyntactic analysis.
-asDag :: T.Text -> [Either (DAG Token) Space]
-asDag =
+asDAG :: T.Text -> [Either (DAG Token) Space]
+asDAG =
     flip evalState 0 . mapM updateIxs . map mkElem . T.groupBy cmp
   where
     cmp x y = isSpace x == isSpace y
@@ -206,11 +238,11 @@ toPaths dag =
         Just es -> [(label e : path) | e <- es, path <- doIt (to e)]
         Nothing -> [[]]
 
--- | Similar to the 'asDag' function but instead of a token DAG it returns
+-- | Similar to the 'asDAG' function but instead of a token DAG it returns
 -- all DAG paths (using the 'toPaths' function) for each word in the
 -- input sentence.
 asPaths :: T.Text -> [Either [[Token]] Space]
-asPaths = mapL toPaths . asDag
+asPaths = mapL toPaths . asDAG
 
 -- | Analyse the input sentence and arbitrarily choose one path
 -- from the output DAG.
