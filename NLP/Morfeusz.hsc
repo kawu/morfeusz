@@ -5,7 +5,7 @@
 {-# LANGUAGE DeriveFunctor #-}
 
 -- | The module provides 'asDAG', 'asPaths' and 'asPath' wrapper functions
--- which use Morfeusz bindings to analyse input sentences. 
+-- which use the Morfeusz library to analyse input sentences. 
 -- The first one represents analysis results as a directed acylic graph
 -- (DAG) with edges labeled with 'Token's.  The DAG representation is needed
 -- when the input word has multiple correct segmentations.
@@ -27,7 +27,7 @@
 --
 -- The last analysis function, 'asPath', takes paths extracted using the 'asPaths' function
 -- and arbitrarily chooses one of them.  While it returns only part of the analysis result,
--- it has also the most user-friendly interface.
+-- it is also the easiest to use.
 -- 
 -- >>> mapM_ print . asPath $ "zdanie ze spacjami"
 -- Left (Token {orth = "zdanie", interps = [Interp {base = "zda\263", msd = "ger:sg:nom.acc:n2:perf:aff"},Interp {base = "zdanie", msd = "subst:sg:nom.acc.voc:n2"}]})
