@@ -1,5 +1,5 @@
 name:               morfeusz
-version:            0.4.0
+version:            0.4.1
 synopsis:           Bindings to the morphological analyser Morfeusz
 description:
     The library provides bindings to the morphological analyser Morfeusz
