@@ -11,6 +11,9 @@ import Setup.Configure
 morfPath :: String
 morfPath = "libmorfeusz"
 
+morfLibSrc :: String
+morfLibSrc = "libmorfeusz.so"
+
 morfLibs :: [String]
 morfLibs = ["libmorfeusz.so.0", "libmorfeusz.so"]
 
@@ -21,7 +24,7 @@ conf desc cfg = do
             path <- sharedPath desc cfg
             createDirectoryIfMissing True path
             forM_ morfLibs $ \lib -> do
-                copyFile (morfPath </> lib) (path </> lib)
+                copyFile (morfPath </> morfLibSrc) (path </> lib)
             C.configure desc $ cfg { configExtraLibDirs = [path] }
         else do
             C.configure desc cfg
