@@ -1,5 +1,5 @@
 name:               morfeusz
-version:            0.4.1
+version:            0.4.2
 synopsis:           Bindings to the morphological analyser Morfeusz
 description:
     The library provides bindings to the morphological analyser Morfeusz
@@ -43,7 +43,6 @@ library
   include-dirs:       libmorfeusz   
   includes:           morfeusz.h
   extra-libraries:    morfeusz
-
 
 source-repository head
     type: git
