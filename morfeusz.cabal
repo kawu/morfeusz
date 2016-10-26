@@ -1,8 +1,8 @@
 name:               morfeusz
-version:            0.4.2
-synopsis:           Bindings to the morphological analyser Morfeusz
+version:            2.0.0
+synopsis:           Bindings to the morphological analyser Morfeusz2
 description:
-    The library provides bindings to the morphological analyser Morfeusz
+    The library provides bindings to the morphological analyser Morfeusz2
     <http://sgjp.pl/morfeusz/>.
 license:            BSD3
 license-file:       LICENSE
@@ -13,15 +13,8 @@ maintainer:         waszczuk.kuba@gmail.com
 stability:          experimental
 category:           Natural Language Processing
 homepage:           https://github.com/kawu/morfeusz
-build-type:         Custom
+build-type:         Simple
 
-extra-source-files:
-  Setup/Configure.hs
-  libmorfeusz/morfeusz.h
-
-data-dir: libmorfeusz
-
-data-files: README, libmorfeusz.so
 
 library
   exposed-modules:  NLP.Morfeusz
@@ -29,20 +22,16 @@ library
 
   -- Package 'directory' is a Setup dependency!
   build-depends:
-      base >= 4 && < 5
-    , containers
-    , text
-    , bytestring
-    , mtl
-    , directory
+      base        >= 4        && < 5
+    , containers  >= 0.4      && < 0.6
+    , text        >= 0.11     && < 1.3
+    , bytestring  >= 0.9      && < 0.11
 
   extensions:       ForeignFunctionInterface
   c-sources:        cbits/global.c
 
-  -- extra-lib-dirs is set programmaticaly in Setup.Configure.
-  include-dirs:       libmorfeusz   
-  includes:           morfeusz.h
-  extra-libraries:    morfeusz
+  includes:           morfeusz2_c.h
+  extra-libraries:    morfeusz2
 
 source-repository head
     type: git

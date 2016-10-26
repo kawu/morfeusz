@@ -15,11 +15,11 @@ with your package's z-encoded name, following
 */
 
 // Imported 'unsafe' in Haskell code. Must not block!
-void* hs_morfeusz_get_global(void) {
+void* hs_morfeusz2_get_global(void) {
     return global;
 }
 
-int hs_morfeusz_set_global(void* new_global) {
+int hs_morfeusz2_set_global(void* new_global) {
     // Set 'global', if it was previously zero.
     void* old = __sync_val_compare_and_swap(&global, 0, new_global);
 

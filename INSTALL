@@ -1,5 +1,6 @@
-To install Morfeusz Haskell bindings, use the following command:
+To install Morfeusz2 Haskell bindings, you will have to install Morfeusz2 in your system beforehand.
+Otherwise you can consider using extra parameters as in the example below:
 
-$ cabal install --extra-include-dirs=$MPATH --extra-lib-dirs=$MPATH
+$ stack ghci --extra-include-dirs=$MPATH --extra-lib-dirs=$MPATH
 
 where $MPATH is a path to Morfeusz library.

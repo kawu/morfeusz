@@ -3,6 +3,7 @@
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE FlexibleContexts #-}
 
 -- | The module provides the 'analyse' wrapper function which uses the
 -- Morfeusz library for morphosyntactic analysis.  The result is represented
@@ -57,7 +58,7 @@ import Foreign.C.String (CString)
 
 import NLP.Morfeusz.Lock (lock)
 
-#include "morfeusz.h"
+#include "morfeusz2_c.h"
 
 -- | Morfeusz options
 newtype MorfOption = MorfOption { unMorfOption :: CInt }

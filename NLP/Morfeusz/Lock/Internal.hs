@@ -24,10 +24,10 @@ blocking library function. -}
 {- If you are copying this file to your own Haskell project, see the
 note in cbits/global.c regarding naming. -}
 
-foreign import ccall unsafe "hs_morfeusz_get_global"
+foreign import ccall unsafe "hs_morfeusz2_get_global"
     c_get_global :: IO (Ptr ())
 
-foreign import ccall "hs_morfeusz_set_global"
+foreign import ccall "hs_morfeusz2_set_global"
     c_set_global :: Ptr () -> IO CInt
 
 set :: IO ()
